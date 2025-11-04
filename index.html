@@ -1,0 +1,2100 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Invoice Management System V2</title>
+  
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <style>
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: #f1f1f1; }
+    ::-webkit-scrollbar-thumb { background: #888; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #555; }
+    
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    .spinner {
+      border: 3px solid #f3f3f3;
+      border-top: 3px solid #3b82f6;
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      animation: spin 1s linear infinite;
+    }
+    
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    .pulse-animation {
+      animation: pulse 2s infinite;
+    }
+
+    .card-expandable {
+      transition: all 0.3s ease;
+    }
+    
+    .card-expandable:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+
+    .notification {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      z-index: 9999;
+      animation: slideIn 0.3s ease;
+    }
+
+    @keyframes slideIn {
+      from {
+        transform: translateX(400px);
+        opacity: 0;
+      }
+      to {
+        transform: translateX(0);
+        opacity: 1;
+      }
+    }
+  </style>
+</head>
+<body class="bg-gray-50">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useCallback, useMemo } = React;
+
+    const ROLES = {
+      admin: { 
+        code: "123789", 
+        name: "Администратор", 
+        permissions: ["all"] 
+      },
+      klimov: { 
+        code: "260190", 
+        name: "Климов Александр", 
+        permissions: ["create", "view"] 
+      },
+      larisa: { 
+        code: "277577", 
+        name: "Лариса Касанова", 
+        permissions: ["create", "view"] 
+      },
+      akbota: { 
+        code: "202593", 
+        name: "Акбота Жанабаева", 
+        permissions: ["create", "view"] 
+      },
+      yusuf: { 
+        code: "301624", 
+        name: "Юсуф Мамедов", 
+        permissions: ["approve", "create", "view"] 
+      },
+      kurshad: { 
+        code: "456789", 
+        name: "Куршад Эрдогмуш", 
+        permissions: ["approve", "create", "view"] 
+      },
+      mikhail: { 
+        code: "402847", 
+        name: "Михаил Жибинов", 
+        permissions: ["confirm", "view"] 
+      },
+      muslim: { 
+        code: "403519", 
+        name: "Муслим Мамедов", 
+        permissions: ["confirm", "view"] 
+      },
+      moldir: { 
+        code: "501248", 
+        name: "Молдир Утешова", 
+        permissions: ["pay", "view"] 
+      },
+      sabina: { 
+        code: "502639", 
+        name: "Сабина Мусаева", 
+        permissions: ["pay", "view"] 
+      }
+    };
+
+    const STATUS_LABELS = {
+      pending: "На согласовании",
+      approved: "Согласован",
+      partial_confirmed: "Частично подтвержден (1/2)",
+      confirmed: "Подтвержден к оплате (2/2)",
+      paid: "Оплачен",
+      rejected: "Отклонен"
+    };
+
+    const STATUS_COLORS = {
+      pending: "bg-yellow-100 text-yellow-800 border-yellow-300",
+      approved: "bg-blue-100 text-blue-800 border-blue-300",
+      partial_confirmed: "bg-orange-100 text-orange-800 border-orange-300",
+      confirmed: "bg-green-100 text-green-800 border-green-300",
+      paid: "bg-emerald-100 text-emerald-800 border-emerald-300",
+      rejected: "bg-red-100 text-red-800 border-red-300"
+    };
+
+    function formatDate(dateStr) {
+      if (!dateStr) return '-';
+      const date = new Date(dateStr);
+      if (isNaN(date)) return dateStr;
+      return date.toLocaleDateString('ru-RU');
+    }
+
+    function formatDateTime(dateStr) {
+      if (!dateStr) return '-';
+      const date = new Date(dateStr);
+      if (isNaN(date)) return dateStr;
+      return date.toLocaleString('ru-RU');
+    }
+
+    function formatAmount(amount, currency) {
+      if (!amount) return '0';
+      const formatted = new Intl.NumberFormat('ru-RU', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      }).format(amount);
+      return `${formatted} ${currency || 'KZT'}`;
+    }
+
+    function getDaysColor(days) {
+      if (days > 14) return 'text-red-600 font-bold';
+      if (days > 7) return 'text-orange-600';
+      if (days > 3) return 'text-yellow-600';
+      return 'text-green-600';
+    }
+
+    function hasPermission(user, permission) {
+      if (!user) return false;
+      return user.permissions.includes('all') || user.permissions.includes(permission);
+    }
+
+    function checkIfUserConfirmed(invoice, userName) {
+      return invoice.confirmedBy1 === userName || 
+             invoice.confirmedBy2 === userName;
+    }
+
+    function isOverdue(dueDateStr) {
+      if (!dueDateStr) return false;
+      const dueDate = new Date(dueDateStr);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      return dueDate < today;
+    }
+
+    const API = {
+      getInvoices: () => {
+        return new Promise((resolve, reject) => {
+          google.script.run
+            .withSuccessHandler(resolve)
+            .withFailureHandler(reject)
+            .getInvoices();
+        });
+      },
+
+      saveInvoice: (data) => {
+        return new Promise((resolve, reject) => {
+          google.script.run
+            .withSuccessHandler(resolve)
+            .withFailureHandler(reject)
+            .saveInvoice(data);
+        });
+      },
+
+      updateInvoiceStatus: (id, status, user) => {
+        return new Promise((resolve, reject) => {
+          google.script.run
+            .withSuccessHandler(resolve)
+            .withFailureHandler(reject)
+            .updateInvoiceStatus(id, status, user);
+        });
+      },
+
+      uploadFiles: (files, number) => {
+        return new Promise((resolve, reject) => {
+          google.script.run
+            .withSuccessHandler(resolve)
+            .withFailureHandler(reject)
+            .uploadFiles(files, number);
+        });
+      },
+
+      getConfig: () => {
+        return new Promise((resolve, reject) => {
+          google.script.run
+            .withSuccessHandler(resolve)
+            .withFailureHandler(reject)
+            .getConfig();
+        });
+      },
+
+      getSuppliers: () => {
+        return new Promise((resolve, reject) => {
+          google.script.run
+            .withSuccessHandler(resolve)
+            .withFailureHandler(reject)
+            .getSuppliers();
+        });
+      },
+
+      addComment: (invoiceId, user, text) => {
+        return new Promise((resolve, reject) => {
+          google.script.run
+            .withSuccessHandler(resolve)
+            .withFailureHandler(reject)
+            .addComment(invoiceId, user, text);
+        });
+      },
+
+      markPrinted: (invoiceId, user) => {
+        return new Promise((resolve, reject) => {
+          google.script.run
+            .withSuccessHandler(resolve)
+            .withFailureHandler(reject)
+            .markInvoicePrinted(invoiceId, user);
+        });
+      }
+    };
+
+    // Уведомления
+    function Notification({ message, type, onClose }) {
+      useEffect(() => {
+        const timer = setTimeout(onClose, 3000);
+        return () => clearTimeout(timer);
+      }, [onClose]);
+
+      const colors = {
+        success: 'bg-green-500',
+        error: 'bg-red-500',
+        info: 'bg-blue-500'
+      };
+
+      return (
+        <div className={`notification ${colors[type]} text-white px-6 py-4 rounded-lg shadow-lg flex items-center gap-3`}>
+          <span className="text-xl">
+            {type === 'success' && '✅'}
+            {type === 'error' && '❌'}
+            {type === 'info' && 'ℹ️'}
+          </span>
+          <span>{message}</span>
+          <button onClick={onClose} className="ml-4 text-xl">×</button>
+        </div>
+      );
+    }
+
+    function AuthScreen({ onLogin }) {
+      const [code, setCode] = useState('');
+      const [error, setError] = useState('');
+
+      const handleSubmit = (e) => {
+        e.preventDefault();
+        
+        if (!code.trim()) {
+          setError('Введите код доступа');
+          return;
+        }
+
+        const user = Object.values(ROLES).find(role => role.code === code.trim());
+        
+        if (!user) {
+          setError('Неверный код доступа!');
+          return;
+        }
+
+        onLogin(user);
+      };
+
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-500 to-purple-600 p-4">
+          <div className="bg-white rounded-xl shadow-2xl p-8 w-full max-w-md">
+            <h1 className="text-3xl font-bold text-gray-800 mb-2 text-center">
+              Система управления счетами
+            </h1>
+            <p className="text-gray-600 mb-8 text-center">
+              Введите ваш код доступа для входа
+            </p>
+            
+            <form onSubmit={handleSubmit}>
+              <div className="mb-6">
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Код доступа
+                </label>
+                <input
+                  type="password"
+                  value={code}
+                  onChange={(e) => setCode(e.target.value)}
+                  placeholder="Введите 4-6 значный код"
+                  maxLength="6"
+                  className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                />
+              </div>
+              
+              {error && (
+                <div className="mb-4 p-3 bg-red-100 border border-red-300 text-red-700 rounded-lg text-sm">
+                  {error}
+                </div>
+              )}
+              
+              <button
+                type="submit"
+                className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 transition"
+              >
+                Войти в систему
+              </button>
+            </form>
+          </div>
+        </div>
+      );
+    }
+
+    function Header({ user, onLogout, onRefresh, lastUpdate, loading }) {
+      return (
+        <div className="bg-gradient-to-r from-blue-700 to-blue-900 text-white shadow-lg">
+          <div className="max-w-7xl mx-auto px-4 py-4">
+            <div className="flex justify-between items-center flex-wrap gap-4">
+              <div>
+                <h1 className="text-2xl font-bold">Система управления счетами</h1>
+                <p className="text-blue-200 text-sm">Invoice Management System V2</p>
+              </div>
+              
+              <div className="flex items-center gap-4">
+                <button
+                  onClick={onRefresh}
+                  disabled={loading}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg transition flex items-center gap-2 disabled:opacity-50"
+                >
+                  <span>🔄</span>
+                  <span>Обновить</span>
+                </button>
+                
+                <div className="text-right">
+                  <div className="font-semibold">{user.name}</div>
+                  <div className="text-sm text-blue-200">
+                    {lastUpdate ? `Обновлено: ${new Date(lastUpdate).toLocaleTimeString('ru-RU')}` : 'Загрузка...'}
+                  </div>
+                </div>
+                
+                <button
+                  onClick={onLogout}
+                  className="px-4 py-2 bg-red-600 hover:bg-red-500 rounded-lg transition"
+                >
+                  Выйти
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function Tabs({ activeTab, onChange }) {
+      const tabs = [
+        { id: 'dashboard', label: 'Дашборд' },
+        { id: 'invoices', label: 'Счета' }
+      ];
+
+      return (
+        <div className="border-b border-gray-200 bg-white">
+          <div className="max-w-7xl mx-auto px-4">
+            <div className="flex gap-8">
+              {tabs.map(tab => (
+                <button
+                  key={tab.id}
+                  onClick={() => onChange(tab.id)}
+                  className={`py-4 px-2 border-b-2 font-medium transition ${
+                    activeTab === tab.id
+                      ? 'border-blue-600 text-blue-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function StatCard({ title, value, subtitle, icon, bgColor, onClick }) {
+      return (
+        <div
+          onClick={onClick}
+          className={`${bgColor} rounded-xl p-6 cursor-pointer hover:shadow-lg transition card-expandable`}
+        >
+          <div className="flex justify-between items-start mb-2">
+            <div className="text-sm font-medium opacity-90">{title}</div>
+            <div className="text-3xl">{icon}</div>
+          </div>
+          <div className="text-3xl font-bold">{value}</div>
+          {subtitle && (
+            <div className="text-xs mt-1 opacity-75">{subtitle}</div>
+          )}
+        </div>
+      );
+    }
+
+    function Dashboard({ invoices, user, onFilterByStatus }) {
+      const stats = useMemo(() => {
+        const activeInvoices = invoices.filter(inv => !inv.archived);
+        const archivedCount = invoices.filter(inv => inv.archived).length;
+        
+        const isFinance = hasPermission(user, 'confirm');
+        
+        let myConfirmationNeeded = 0;
+        let myConfirmed = 0;
+        
+        if (isFinance) {
+          activeInvoices.forEach(inv => {
+            if (inv.status === 'approved' || inv.status === 'partial_confirmed') {
+              if (!checkIfUserConfirmed(inv, user.name)) {
+                myConfirmationNeeded++;
+              } else {
+                myConfirmed++;
+              }
+            }
+          });
+        }
+        
+        return {
+          total: activeInvoices.length,
+          archived: archivedCount,
+          pending: activeInvoices.filter(inv => inv.status === 'pending').length,
+          approved: activeInvoices.filter(inv => inv.status === 'approved').length,
+          partialConfirmed: activeInvoices.filter(inv => inv.status === 'partial_confirmed').length,
+          confirmed: activeInvoices.filter(inv => inv.status === 'confirmed').length,
+          paid: activeInvoices.filter(inv => inv.status === 'paid').length,
+          rejected: activeInvoices.filter(inv => inv.status === 'rejected').length,
+          myConfirmationNeeded,
+          myConfirmed,
+          isFinance
+        };
+      }, [invoices, user]);
+
+      return (
+        <div className="max-w-7xl mx-auto px-4 py-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+            <StatCard
+              title="Всего счетов"
+              value={stats.total}
+              icon="📊"
+              bgColor="bg-blue-50"
+              onClick={() => onFilterByStatus('')}
+            />
+            <StatCard
+              title="На согласовании"
+              value={stats.pending}
+              subtitle="Ожидают снабжение"
+              icon="⏳"
+              bgColor="bg-yellow-50"
+              onClick={() => onFilterByStatus('pending')}
+            />
+            <StatCard
+              title="Согласовано"
+              value={stats.approved}
+              subtitle="Ожидают финансы"
+              icon="✅"
+              bgColor="bg-blue-50"
+              onClick={() => onFilterByStatus('approved')}
+            />
+            
+            {stats.isFinance ? (
+              <StatCard
+                title="Ожидают МОЕГО подтверждения"
+                value={stats.myConfirmationNeeded}
+                subtitle={`Я подтвердил: ${stats.myConfirmed}`}
+                icon="💰"
+                bgColor="bg-orange-50"
+                onClick={() => onFilterByStatus('my_confirmation')}
+              />
+            ) : (
+              <StatCard
+                title="Частично подтверждено"
+                value={stats.partialConfirmed}
+                subtitle="Нужно еще 1 подтверждение"
+                icon="⚡"
+                bgColor="bg-orange-50"
+                onClick={() => onFilterByStatus('partial_confirmed')}
+              />
+            )}
+            
+            <StatCard
+              title="К оплате"
+              value={stats.confirmed}
+              subtitle="Подтверждено 2/2"
+              icon="💰"
+              bgColor="bg-green-50"
+              onClick={() => onFilterByStatus('confirmed')}
+            />
+            <StatCard
+              title="Оплачены"
+              value={stats.paid}
+              icon="✅"
+              bgColor="bg-emerald-50"
+              onClick={() => onFilterByStatus('paid')}
+            />
+            <StatCard
+              title="Отклонены"
+              value={stats.rejected}
+              icon="❌"
+              bgColor="bg-red-50"
+              onClick={() => onFilterByStatus('rejected')}
+            />
+            <StatCard
+              title="В архиве"
+              value={stats.archived}
+              icon="📦"
+              bgColor="bg-gray-50"
+              onClick={() => {}}
+            />
+          </div>
+
+          <div className="bg-white rounded-xl shadow p-6">
+            <h3 className="text-lg font-semibold mb-4">Быстрый доступ</h3>
+            <p className="text-gray-600">
+              Кликните на карточку выше, чтобы отфильтровать счета по статусу
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    function InvoiceCard({ invoice, user, onView, onAction, onPrint, onAddComment }) {
+      const [expanded, setExpanded] = useState(false);
+      
+      const daysColor = getDaysColor(invoice.daysInSystem);
+      const overdue = isOverdue(invoice.dueDate);
+
+      const canApprove = invoice.status === 'pending' && hasPermission(user, 'approve');
+      const canReject = (
+        (invoice.status === 'pending' && hasPermission(user, 'approve')) ||
+        ((invoice.status === 'approved' || invoice.status === 'partial_confirmed') && hasPermission(user, 'confirm')) ||
+        (invoice.status === 'confirmed' && hasPermission(user, 'pay'))
+      );
+      const canConfirm = (invoice.status === 'approved' || invoice.status === 'partial_confirmed') && 
+                         hasPermission(user, 'confirm') && 
+                         !checkIfUserConfirmed(invoice, user.name);
+      const canPay = invoice.status === 'confirmed' && hasPermission(user, 'pay');
+      const canPrint = invoice.status === 'confirmed' && hasPermission(user, 'pay');
+
+      const userAlreadyConfirmed = checkIfUserConfirmed(invoice, user.name);
+
+      return (
+        <div className={`bg-white rounded-xl shadow-md border-2 ${STATUS_COLORS[invoice.status].split(' ')[2]} p-6 mb-4 card-expandable ${invoice.archived ? 'opacity-60' : ''}`}>
+          <div className="flex justify-between items-start mb-4">
+            <div className="flex-1">
+              <div className="flex items-center gap-3 mb-2 flex-wrap">
+                <h3 className="text-xl font-bold text-gray-800">№{invoice.number}</h3>
+                <span className={`px-3 py-1 rounded-full text-sm font-semibold border ${STATUS_COLORS[invoice.status]}`}>
+                  {STATUS_LABELS[invoice.status]}
+                </span>
+                {invoice.priority === 'Срочно' && (
+                  <span className="text-red-600 font-bold pulse-animation">🔥 СРОЧНО</span>
+                )}
+                {invoice.priority === 'Высокий' && (
+                  <span className="text-orange-600 font-semibold">⚠️ ВЫСОКИЙ</span>
+                )}
+                {overdue && invoice.status !== 'paid' && invoice.status !== 'rejected' && (
+                  <span className="text-red-600 font-bold">⏰ ПРОСРОЧЕН</span>
+                )}
+                {invoice.printed && (
+                  <span className="text-gray-500">🖨️ Распечатан</span>
+                )}
+                {invoice.archived && (
+                  <span className="text-gray-500">📦 Архив</span>
+                )}
+              </div>
+              <div className="text-sm text-gray-600">
+                Создан: {formatDate(invoice.date)} | 
+                <span className={`ml-2 ${daysColor}`}>
+                  {invoice.daysInSystem} дн. в системе
+                </span>
+              </div>
+            </div>
+            <button
+              onClick={() => setExpanded(!expanded)}
+              className="text-blue-600 hover:text-blue-800 text-2xl ml-4"
+            >
+              {expanded ? '▼' : '▶'}
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <div>
+              <div className="text-sm text-gray-500">Компания</div>
+              <div className="font-semibold text-gray-800">{invoice.company}</div>
+            </div>
+            <div>
+              <div className="text-sm text-gray-500">Поставщик</div>
+              <div className="font-semibold text-gray-800">{invoice.supplier}</div>
+            </div>
+          </div>
+
+          <div className="bg-blue-50 rounded-lg p-4 mb-4">
+            <div className="text-3xl font-bold text-blue-900">
+              {formatAmount(invoice.amount, invoice.currency)}
+            </div>
+            <div className="text-sm text-gray-600 mt-1">
+              Срок оплаты: {formatDate(invoice.dueDate)}
+            </div>
+          </div>
+
+          <div className="bg-yellow-50 rounded-lg p-3 mb-4">
+            <div className="text-xs text-gray-600 mb-1">Назначение платежа:</div>
+            <div className="text-sm text-gray-800">{invoice.purpose}</div>
+          </div>
+
+          {(invoice.approvedBy || invoice.confirmedBy1 || invoice.confirmedBy2 || invoice.paidBy) && (
+            <div className="bg-gray-50 rounded-lg p-3 mb-4">
+              <div className="text-xs font-semibold text-gray-700 mb-2">Согласование:</div>
+              <div className="space-y-1 text-sm">
+                {invoice.approvedBy && (
+                  <div className="text-blue-600">✅ Снабжение: {invoice.approvedBy}</div>
+                )}
+                {invoice.confirmedBy1 && (
+                  <div className="text-green-600">
+                    💰 Финансы (1/2): {invoice.confirmedBy1}
+                    {invoice.confirmedBy1 === user.name && <span className="ml-2 text-xs">(вы)</span>}
+                  </div>
+                )}
+                {invoice.confirmedBy2 && (
+                  <div className="text-green-600">
+                    💰 Финансы (2/2): {invoice.confirmedBy2}
+                    {invoice.confirmedBy2 === user.name && <span className="ml-2 text-xs">(вы)</span>}
+                  </div>
+                )}
+                {!invoice.confirmedBy2 && (invoice.status === 'approved' || invoice.status === 'partial_confirmed') && hasPermission(user, 'confirm') && (
+                  <div className="text-orange-600">
+                    {userAlreadyConfirmed ? (
+                      <span>⏳ Ожидает подтверждения второго финансиста</span>
+                    ) : (
+                      <span className="font-semibold">⏳ Ожидает ВАШЕГО подтверждения</span>
+                    )}
+                  </div>
+                )}
+                {invoice.paidBy && (
+                  <div className="text-emerald-600">💳 Оплата: {invoice.paidBy}</div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {expanded && (
+            <div className="border-t pt-4 mt-4 space-y-3">
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <span className="text-gray-500">БИН поставщика:</span>
+                  <span className="ml-2 font-medium">{invoice.supplierBIN || '-'}</span>
+                </div>
+                <div>
+                  <span className="text-gray-500">Создал:</span>
+                  <span className="ml-2 font-medium">{invoice.createdBy}</span>
+                </div>
+              </div>
+
+              {invoice.notes && (
+                <div className="bg-red-50 rounded p-3">
+                  <div className="text-xs text-red-700 font-semibold mb-1">Примечания:</div>
+                  <div className="text-sm text-red-900 whitespace-pre-wrap">{invoice.notes}</div>
+                </div>
+              )}
+
+              {invoice.files && (
+                <div className="bg-gray-50 rounded p-3">
+                  <div className="text-xs text-gray-700 font-semibold mb-2">📎 Файлы:</div>
+                  {invoice.files.split('\n').map((url, i) => (
+                    <div key={i} className="flex items-center gap-2 mb-2">
+                      <a
+                        href={url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex-1 text-blue-600 hover:underline text-sm"
+                      >
+                        Файл {i + 1}
+                      </a>
+                      {canPrint && (
+                        <button
+                          onClick={() => {
+                            window.open(url, '_blank');
+                            if (!invoice.printed) {
+                              onPrint(invoice);
+                            }
+                          }}
+                          className="px-2 py-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 text-xs"
+                        >
+                          🖨️ Печать
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  {canPrint && invoice.files.split('\n').length > 1 && (
+                    <button
+                      onClick={() => {
+                        invoice.files.split('\n').forEach(url => window.open(url, '_blank'));
+                        if (!invoice.printed) {
+                          onPrint(invoice);
+                        }
+                      }}
+                      className="mt-2 px-3 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 text-sm font-medium"
+                    >
+                      🖨️ Распечатать все файлы
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {invoice.comments && invoice.comments.length > 0 && (
+                <div className="bg-purple-50 rounded p-3">
+                  <div className="text-xs text-purple-700 font-semibold mb-2">💬 Комментарии:</div>
+                  {invoice.comments.map((comment, i) => (
+                    <div key={i} className="mb-2 pb-2 border-b border-purple-200 last:border-0">
+                      <div className="text-xs text-gray-600">{comment.user} - {formatDateTime(comment.timestamp)}</div>
+                      <div className="text-sm text-gray-800 mt-1">{comment.text}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <button
+                onClick={() => onAddComment(invoice)}
+                className="w-full px-3 py-2 bg-purple-100 text-purple-700 rounded hover:bg-purple-200 text-sm font-medium"
+              >
+                💬 Добавить комментарий
+              </button>
+            </div>
+          )}
+
+          <div className="flex gap-2 mt-4 flex-wrap">
+            <button
+              onClick={() => onView(invoice)}
+              className="px-5 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium"
+            >
+              👁️ Просмотр
+            </button>
+            
+            {canApprove && (
+              <button
+                onClick={() => onAction(invoice, 'approve')}
+                className="px-5 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-medium"
+              >
+                ✅ Согласовать
+              </button>
+            )}
+            
+            {canConfirm && (
+              <button
+                onClick={() => onAction(invoice, 'confirm')}
+                className="px-5 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium"
+              >
+                💰 Подтвердить
+              </button>
+            )}
+            
+            {canPay && (
+              <button
+                onClick={() => onAction(invoice, 'pay')}
+                className="px-5 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-sm font-medium"
+              >
+                💳 Оплатить
+              </button>
+            )}
+            
+            {canReject && (
+              <button
+                onClick={() => onAction(invoice, 'reject')}
+                className="px-5 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm font-medium"
+              >
+                ❌ Отклонить
+              </button>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    function InvoicesView({ invoices, user, onView, onAction, onCreateNew, onPrint, onAddComment, initialStatusFilter }) {
+      const [searchTerm, setSearchTerm] = useState('');
+      const [statusFilter, setStatusFilter] = useState('');
+      const [quickFilter, setQuickFilter] = useState('');
+      const [showArchived, setShowArchived] = useState(false);
+      const [currentPage, setCurrentPage] = useState(1);
+      const itemsPerPage = 10;
+
+      useEffect(() => {
+        if (initialStatusFilter) {
+          setStatusFilter(initialStatusFilter);
+          setQuickFilter('');
+        }
+      }, [initialStatusFilter]);
+
+      const filteredInvoices = useMemo(() => {
+        let filtered = invoices;
+
+        if (!showArchived) {
+          filtered = filtered.filter(inv => !inv.archived);
+        }
+
+        if (searchTerm) {
+          const term = searchTerm.toLowerCase();
+          filtered = filtered.filter(inv => 
+            inv.number.toLowerCase().includes(term) ||
+            inv.supplier.toLowerCase().includes(term) ||
+            inv.company.toLowerCase().includes(term) ||
+            inv.purpose.toLowerCase().includes(term)
+          );
+        }
+
+        if (quickFilter === 'urgent') {
+          filtered = filtered.filter(inv => inv.priority === 'Срочно');
+        } else if (quickFilter === 'overdue') {
+          filtered = filtered.filter(inv => 
+            isOverdue(inv.dueDate) && inv.status !== 'paid' && inv.status !== 'rejected'
+          );
+        } else if (quickFilter === 'my_invoices') {
+          filtered = filtered.filter(inv => inv.createdBy === user.name);
+        } else if (quickFilter === 'my_approval') {
+          filtered = filtered.filter(inv => inv.status === 'pending');
+        } else if (quickFilter === 'to_pay') {
+          filtered = filtered.filter(inv => inv.status === 'confirmed');
+        } else if (quickFilter === 'not_printed') {
+          filtered = filtered.filter(inv => inv.status === 'confirmed' && !inv.printed);
+        }
+
+        if (statusFilter) {
+          if (statusFilter === 'my_confirmation') {
+            filtered = filtered.filter(inv => 
+              (inv.status === 'approved' || inv.status === 'partial_confirmed') &&
+              !checkIfUserConfirmed(inv, user.name)
+            );
+          } else {
+            filtered = filtered.filter(inv => inv.status === statusFilter);
+          }
+        }
+
+        return filtered;
+      }, [invoices, searchTerm, statusFilter, quickFilter, showArchived, user]);
+
+      const totalPages = Math.ceil(filteredInvoices.length / itemsPerPage);
+      const startIndex = (currentPage - 1) * itemsPerPage;
+      const paginatedInvoices = filteredInvoices.slice(startIndex, startIndex + itemsPerPage);
+
+      useEffect(() => {
+        setCurrentPage(1);
+      }, [searchTerm, statusFilter, quickFilter, showArchived]);
+
+      const canCreate = hasPermission(user, 'create') || hasPermission(user, 'all');
+      const isFinance = hasPermission(user, 'confirm');
+      const isSupply = hasPermission(user, 'approve');
+      const isCashier = hasPermission(user, 'pay');
+      const isInitiator = hasPermission(user, 'create');
+
+      return (
+        <div className="max-w-7xl mx-auto px-4 py-6">
+          <div className="bg-white rounded-xl shadow mb-6">
+            <div className="p-4 border-b">
+              <div className="flex gap-4 flex-wrap items-center mb-4">
+                <input
+                  type="text"
+                  placeholder="Поиск по номеру, поставщику, назначению..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="flex-1 min-w-[250px] px-4 py-2 border-2 rounded-lg focus:outline-none focus:border-blue-500"
+                />
+                
+                <select
+                  value={statusFilter}
+                  onChange={(e) => {
+                    setStatusFilter(e.target.value);
+                    setQuickFilter('');
+                  }}
+                  className="px-4 py-2 border-2 rounded-lg focus:outline-none focus:border-blue-500"
+                >
+                  <option value="">Все статусы</option>
+                  <option value="pending">На согласовании</option>
+                  <option value="approved">Согласованы</option>
+                  <option value="partial_confirmed">Частично подтверждены</option>
+                  <option value="confirmed">К оплате</option>
+                  <option value="paid">Оплачены</option>
+                  <option value="rejected">Отклонены</option>
+                </select>
+
+                <label className="flex items-center gap-2 px-4 py-2 border-2 rounded-lg cursor-pointer hover:bg-gray-50">
+                  <input
+                    type="checkbox"
+                    checked={showArchived}
+                    onChange={(e) => setShowArchived(e.target.checked)}
+                    className="w-4 h-4"
+                  />
+                  <span className="text-sm">Архивные</span>
+                </label>
+
+                {canCreate && (
+                  <button
+                    onClick={onCreateNew}
+                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition flex items-center gap-2"
+                  >
+                    <span>➕</span>
+                    <span>Создать</span>
+                  </button>
+                )}
+              </div>
+
+              <div className="flex gap-2 flex-wrap">
+                <button
+                  onClick={() => {
+                    setQuickFilter('urgent');
+                    setStatusFilter('');
+                  }}
+                  className={`px-3 py-1 rounded-lg text-sm font-medium transition ${
+                    quickFilter === 'urgent'
+                      ? 'bg-red-600 text-white'
+                      : 'bg-red-100 text-red-800 hover:bg-red-200'
+                  }`}
+                >
+                  🔥 Срочные
+                </button>
+
+                <button
+                  onClick={() => {
+                    setQuickFilter('overdue');
+                    setStatusFilter('');
+                  }}
+                  className={`px-3 py-1 rounded-lg text-sm font-medium transition ${
+                    quickFilter === 'overdue'
+                      ? 'bg-orange-600 text-white'
+                      : 'bg-orange-100 text-orange-800 hover:bg-orange-200'
+                  }`}
+                >
+                  ⏰ Просроченные
+                </button>
+
+                {isInitiator && (
+                  <button
+                    onClick={() => {
+                      setQuickFilter('my_invoices');
+                      setStatusFilter('');
+                    }}
+                    className={`px-3 py-1 rounded-lg text-sm font-medium transition ${
+                      quickFilter === 'my_invoices'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-blue-100 text-blue-800 hover:bg-blue-200'
+                    }`}
+                  >
+                    📝 Мои счета
+                  </button>
+                )}
+
+                {isSupply && (
+                  <button
+                    onClick={() => {
+                      setQuickFilter('my_approval');
+                      setStatusFilter('');
+                    }}
+                    className={`px-3 py-1 rounded-lg text-sm font-medium transition ${
+                      quickFilter === 'my_approval'
+                        ? 'bg-yellow-600 text-white'
+                        : 'bg-yellow-100 text-yellow-800 hover:bg-yellow-200'
+                    }`}
+                  >
+                    ✅ На моем согласовании
+                  </button>
+                )}
+
+                {isFinance && (
+                  <button
+                    onClick={() => {
+                      setStatusFilter('my_confirmation');
+                      setQuickFilter('');
+                    }}
+                    className={`px-3 py-1 rounded-lg text-sm font-medium transition ${
+                      statusFilter === 'my_confirmation'
+                        ? 'bg-orange-600 text-white'
+                        : 'bg-orange-100 text-orange-800 hover:bg-orange-200'
+                    }`}
+                  >
+                    💰 Нужно МНЕ подтвердить
+                  </button>
+                )}
+
+                {isCashier && (
+                  <>
+                    <button
+                      onClick={() => {
+                        setQuickFilter('to_pay');
+                        setStatusFilter('');
+                      }}
+                      className={`px-3 py-1 rounded-lg text-sm font-medium transition ${
+                        quickFilter === 'to_pay'
+                          ? 'bg-green-600 text-white'
+                          : 'bg-green-100 text-green-800 hover:bg-green-200'
+                      }`}
+                    >
+                      💳 К оплате
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        setQuickFilter('not_printed');
+                        setStatusFilter('');
+                      }}
+                      className={`px-3 py-1 rounded-lg text-sm font-medium transition ${
+                        quickFilter === 'not_printed'
+                          ? 'bg-purple-600 text-white'
+                          : 'bg-purple-100 text-purple-800 hover:bg-purple-200'
+                      }`}
+                    >
+                      🖨️ Нераспечатанные
+                    </button>
+                  </>
+                )}
+
+                {(statusFilter || quickFilter) && (
+                  <button
+                    onClick={() => {
+                      setStatusFilter('');
+                      setQuickFilter('');
+                    }}
+                    className="px-3 py-1 bg-gray-200 text-gray-800 rounded-lg text-sm font-medium hover:bg-gray-300"
+                  >
+                    ✖ Сбросить
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {paginatedInvoices.length === 0 ? (
+            <div className="bg-white rounded-xl shadow p-12 text-center">
+              <div className="text-gray-400 text-6xl mb-4">📋</div>
+              <div className="text-gray-600 text-lg">Нет данных для отображения</div>
+            </div>
+          ) : (
+            <>
+              {paginatedInvoices.map(invoice => (
+                <InvoiceCard
+                  key={invoice.id}
+                  invoice={invoice}
+                  user={user}
+                  onView={onView}
+                  onAction={onAction}
+                  onPrint={onPrint}
+                  onAddComment={onAddComment}
+                />
+              ))}
+
+              {totalPages > 1 && (
+                <div className="bg-white rounded-xl shadow p-4 flex justify-between items-center mt-6">
+                  <div className="text-sm text-gray-600">
+                    Показано {startIndex + 1}-{Math.min(startIndex + itemsPerPage, filteredInvoices.length)} из {filteredInvoices.length}
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                      disabled={currentPage === 1}
+                      className="px-3 py-1 border rounded hover:bg-gray-50 disabled:opacity-50"
+                    >
+                      ←
+                    </button>
+                    <span className="px-3 py-1">
+                      Страница {currentPage} из {totalPages}
+                    </span>
+                    <button
+                      onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                      disabled={currentPage === totalPages}
+                      className="px-3 py-1 border rounded hover:bg-gray-50 disabled:opacity-50"
+                    >
+                      →
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      );
+    }
+
+    function CommentModal({ invoice, isOpen, onClose, onAdd, loading }) {
+      const [comment, setComment] = useState('');
+      const [error, setError] = useState('');
+
+      if (!isOpen || !invoice) return null;
+
+      const handleSubmit = () => {
+        if (!comment.trim()) {
+          setError('Введите текст комментария');
+          return;
+        }
+        onAdd(comment);
+        setComment('');
+      };
+
+      return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50" onClick={onClose}>
+          <div className="bg-white rounded-xl max-w-lg w-full" onClick={e => e.stopPropagation()}>
+            <div className="p-6 border-b flex justify-between items-center">
+              <h2 className="text-xl font-bold">Добавить комментарий</h2>
+              <button onClick={onClose} className="text-gray-500 hover:text-gray-700 text-3xl leading-none">×</button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div className="bg-gray-50 p-4 rounded-lg">
+                <div><strong>Счет №:</strong> {invoice.number}</div>
+                <div><strong>Поставщик:</strong> {invoice.supplier}</div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Ваш комментарий *
+                </label>
+                <textarea
+                  value={comment}
+                  onChange={(e) => {
+                    setComment(e.target.value);
+                    setError('');
+                  }}
+                  placeholder="Введите комментарий..."
+                  rows="4"
+                  className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                />
+                {error && (
+                  <div className="mt-2 text-red-600 text-sm">{error}</div>
+                )}
+              </div>
+            </div>
+
+            <div className="p-6 border-t flex justify-end gap-3">
+              <button
+                onClick={onClose}
+                disabled={loading}
+                className="px-6 py-2 bg-gray-200 rounded-lg hover:bg-gray-300 disabled:opacity-50"
+              >
+                Отмена
+              </button>
+              <button
+                onClick={handleSubmit}
+                disabled={loading}
+                className="px-6 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 flex items-center gap-2"
+              >
+                {loading && <div className="spinner w-4 h-4"></div>}
+                Добавить комментарий
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function CreateInvoiceModal({ isOpen, onClose, onCreate, config, suppliers }) {
+      const [formData, setFormData] = useState({
+        company: '',
+        number: '',
+        supplier: '',
+        supplierBIN: '',
+        amount: '',
+        currency: 'KZT',
+        purpose: '',
+        date: new Date().toISOString().split('T')[0],
+        dueDate: '',
+        priority: 'Обычный',
+        notes: ''
+      });
+      const [files, setFiles] = useState([]);
+      const [error, setError] = useState('');
+      const [loading, setLoading] = useState(false);
+
+      useEffect(() => {
+        if (isOpen) {
+          setFormData({
+            company: '',
+            number: '',
+            supplier: '',
+            supplierBIN: '',
+            amount: '',
+            currency: 'KZT',
+            purpose: '',
+            date: new Date().toISOString().split('T')[0],
+            dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+            priority: 'Обычный',
+            notes: ''
+          });
+          setFiles([]);
+          setError('');
+        }
+      }, [isOpen]);
+
+      const handleInputChange = (field, value) => {
+        setFormData(prev => ({ ...prev, [field]: value }));
+        setError('');
+      };
+
+      const handleFileChange = (e) => {
+        const selectedFiles = Array.from(e.target.files);
+        
+        if (selectedFiles.length > 3) {
+          setError('Максимум 3 файла');
+          return;
+        }
+
+        for (let file of selectedFiles) {
+          if (file.size > 20 * 1024 * 1024) {
+            setError(`Файл ${file.name} больше 20MB`);
+            return;
+          }
+        }
+
+        setFiles(selectedFiles);
+        setError('');
+      };
+
+      const validateForm = () => {
+        if (!formData.company) return 'Выберите компанию';
+        if (!formData.number) return 'Введите номер счета';
+        if (!formData.supplier) return 'Введите поставщика';
+        if (!formData.amount || parseFloat(formData.amount) <= 0) return 'Введите корректную сумму';
+        if (!formData.purpose) return 'Введите назначение платежа';
+        if (!formData.date) return 'Укажите дату счета';
+        if (!formData.dueDate) return 'Укажите срок оплаты';
+        if (files.length === 0) return 'Прикрепите хотя бы один файл';
+        return null;
+      };
+
+      const handleSubmit = async (e) => {
+        e.preventDefault();
+        
+        const validationError = validateForm();
+        if (validationError) {
+          setError(validationError);
+          return;
+        }
+
+        setLoading(true);
+        setError('');
+
+        try {
+          const filesData = await Promise.all(
+            Array.from(files).map(file => {
+              return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => {
+                  resolve({
+                    name: file.name,
+                    type: file.type,
+                    size: file.size,
+                    content: reader.result.split(',')[1]
+                  });
+                };
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+              });
+            })
+          );
+
+          await onCreate(formData, filesData);
+          
+        } catch (err) {
+          setError(err.message || 'Ошибка создания счета');
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      if (!isOpen) return null;
+
+      return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50 overflow-y-auto" onClick={onClose}>
+          <div className="bg-white rounded-xl max-w-3xl w-full my-8" onClick={e => e.stopPropagation()}>
+            <div className="p-6 border-b flex justify-between items-center sticky top-0 bg-white z-10">
+              <h2 className="text-2xl font-bold">Создать новый счет</h2>
+              <button onClick={onClose} className="text-gray-500 hover:text-gray-700 text-3xl leading-none">×</button>
+            </div>
+
+            <form onSubmit={handleSubmit} className="p-6 space-y-4 max-h-[calc(100vh-200px)] overflow-y-auto">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Компания *
+                  </label>
+                  <select
+                    value={formData.company}
+                    onChange={(e) => handleInputChange('company', e.target.value)}
+                    className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                    required
+                  >
+                    <option value="">Выберите компанию</option>
+                    {config?.companies.map(company => (
+                      <option key={company} value={company}>{company}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Номер счета *
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.number}
+                    onChange={(e) => handleInputChange('number', e.target.value)}
+                    placeholder="Номер счета от поставщика"
+                    className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Поставщик *
+                </label>
+                <input
+                  type="text"
+                  value={formData.supplier}
+                  onChange={(e) => handleInputChange('supplier', e.target.value)}
+                  placeholder="Название поставщика"
+                  className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  БИН/ИИН поставщика
+                </label>
+                <input
+                  type="text"
+                  value={formData.supplierBIN}
+                  onChange={(e) => handleInputChange('supplierBIN', e.target.value)}
+                  placeholder="12-значный БИН"
+                  maxLength="12"
+                  className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Сумма *
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={formData.amount}
+                    onChange={(e) => handleInputChange('amount', e.target.value)}
+                    placeholder="0.00"
+                    className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Валюта *
+                  </label>
+                  <select
+                    value={formData.currency}
+                    onChange={(e) => handleInputChange('currency', e.target.value)}
+                    className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                    required
+                  >
+                    {config?.currencies.map(curr => (
+                      <option key={curr} value={curr}>{curr}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Назначение платежа *
+                </label>
+                <textarea
+                  value={formData.purpose}
+                  onChange={(e) => handleInputChange('purpose', e.target.value)}
+                  placeholder="Краткое описание назначения платежа"
+                  rows="3"
+                  className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                  required
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Дата счета *
+                  </label>
+                  <input
+                    type="date"
+                    value={formData.date}
+                    onChange={(e) => handleInputChange('date', e.target.value)}
+                    className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Срок оплаты *
+                  </label>
+                  <input
+                    type="date"
+                    value={formData.dueDate}
+                    onChange={(e) => handleInputChange('dueDate', e.target.value)}
+                    className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Приоритет *
+                </label>
+                <select
+                  value={formData.priority}
+                  onChange={(e) => handleInputChange('priority', e.target.value)}
+                  className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                  required
+                >
+                  {config?.priorities.map(priority => (
+                    <option key={priority} value={priority}>{priority}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Прикрепить файлы (до 3 шт, до 20MB каждый) *
+                </label>
+                <input
+                  type="file"
+                  multiple
+                  accept=".pdf,.jpg,.jpeg,.png,.doc,.docx,.xls,.xlsx"
+                  onChange={handleFileChange}
+                  className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                />
+                {files.length > 0 && (
+                  <div className="mt-2 space-y-2">
+                    {Array.from(files).map((file, i) => (
+                      <div key={i} className="flex justify-between items-center p-2 bg-gray-50 rounded">
+                        <span className="text-sm">{file.name} ({(file.size / 1024 / 1024).toFixed(2)} MB)</span>
+                        <button
+                          type="button"
+                          onClick={() => setFiles(prev => prev.filter((_, idx) => idx !== i))}
+                          className="text-red-600 hover:text-red-800 text-xl"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Примечания
+                </label>
+                <textarea
+                  value={formData.notes}
+                  onChange={(e) => handleInputChange('notes', e.target.value)}
+                  placeholder="Дополнительная информация"
+                  rows="2"
+                  className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                />
+              </div>
+
+              {error && (
+                <div className="p-3 bg-red-100 border border-red-300 text-red-700 rounded-lg text-sm">
+                  {error}
+                </div>
+              )}
+
+              <div className="flex justify-end gap-3 pt-4">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  disabled={loading}
+                  className="px-6 py-2 bg-gray-200 rounded-lg hover:bg-gray-300 disabled:opacity-50"
+                >
+                  Отмена
+                </button>
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 flex items-center gap-2"
+                >
+                  {loading && <div className="spinner w-4 h-4"></div>}
+                  Создать счет
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      );
+    }
+
+    function ViewInvoiceModal({ invoice, isOpen, onClose }) {
+      if (!isOpen || !invoice) return null;
+
+      return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50" onClick={onClose}>
+          <div className="bg-white rounded-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="p-6 border-b flex justify-between items-center sticky top-0 bg-white z-10">
+              <h2 className="text-2xl font-bold">Счет №{invoice.number}</h2>
+              <button onClick={onClose} className="text-gray-500 hover:text-gray-700 text-3xl leading-none">×</button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <div className="text-sm text-gray-600">Компания</div>
+                  <div className="font-semibold">{invoice.company}</div>
+                </div>
+                <div>
+                  <div className="text-sm text-gray-600">Поставщик</div>
+                  <div className="font-semibold">{invoice.supplier}</div>
+                  {invoice.supplierBIN && (
+                    <div className="text-sm text-gray-500">БИН: {invoice.supplierBIN}</div>
+                  )}
+                </div>
+              </div>
+
+              <div className="bg-blue-50 p-4 rounded-lg">
+                <div className="text-3xl font-bold text-blue-900">
+                  {formatAmount(invoice.amount, invoice.currency)}
+                </div>
+                <div className="mt-2 flex gap-4 flex-wrap">
+                  <span className={`px-3 py-1 rounded-full text-sm font-semibold border ${STATUS_COLORS[invoice.status]}`}>
+                    {STATUS_LABELS[invoice.status]}
+                  </span>
+                  <span className="text-sm">Приоритет: {invoice.priority}</span>
+                  <span className={`text-sm ${getDaysColor(invoice.daysInSystem)}`}>
+                    {invoice.daysInSystem} дн. в системе
+                  </span>
+                </div>
+              </div>
+
+              <div className="bg-yellow-50 p-4 rounded-lg">
+                <div className="text-sm text-gray-600 mb-1">Назначение платежа</div>
+                <div>{invoice.purpose}</div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <div className="text-sm text-gray-600">Дата счета</div>
+                  <div>{formatDate(invoice.date)}</div>
+                </div>
+                <div>
+                  <div className="text-sm text-gray-600">Срок оплаты</div>
+                  <div>{formatDate(invoice.dueDate)}</div>
+                </div>
+              </div>
+
+              {invoice.notes && (
+                <div className="bg-red-50 p-4 rounded-lg">
+                  <div className="text-sm text-gray-600 mb-1">Примечания</div>
+                  <div className="whitespace-pre-wrap">{invoice.notes}</div>
+                </div>
+              )}
+
+              {invoice.files && (
+                <div className="bg-gray-50 p-4 rounded-lg">
+                  <div className="text-sm text-gray-600 mb-2">Прикрепленные файлы</div>
+                  {invoice.files.split('\n').map((url, i) => (
+                    <a
+                      key={i}
+                      href={url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block text-blue-600 hover:underline mb-1"
+                    >
+                      Файл {i + 1}
+                    </a>
+                  ))}
+                </div>
+              )}
+
+              <div className="bg-blue-50 p-4 rounded-lg">
+                <div className="font-semibold mb-2">История согласования</div>
+                <div className="space-y-2 text-sm">
+                  {invoice.createdBy && (
+                    <div>📝 Создан: {invoice.createdBy} ({formatDateTime(invoice.createdAt)})</div>
+                  )}
+                  {invoice.approvedBy && (
+                    <div>✅ Согласован: {invoice.approvedBy} ({formatDateTime(invoice.approvedAt)})</div>
+                  )}
+                  {invoice.confirmedBy1 && (
+                    <div>💰 Подтвержден (1/2): {invoice.confirmedBy1} ({formatDateTime(invoice.confirmedAt1)})</div>
+                  )}
+                  {invoice.confirmedBy2 && (
+                    <div>💰 Подтвержден (2/2): {invoice.confirmedBy2} ({formatDateTime(invoice.confirmedAt2)})</div>
+                  )}
+                  {invoice.paidBy && (
+                    <div>💳 Оплачен: {invoice.paidBy} ({formatDateTime(invoice.paidAt)})</div>
+                  )}
+                  {invoice.printed && (
+                    <div>🖨️ Распечатан: {invoice.printedBy} ({formatDateTime(invoice.printedAt)})</div>
+                  )}
+                </div>
+              </div>
+
+              {invoice.comments && invoice.comments.length > 0 && (
+                <div className="bg-purple-50 p-4 rounded-lg">
+                  <div className="font-semibold mb-2">Комментарии</div>
+                  {invoice.comments.map((comment, i) => (
+                    <div key={i} className="mb-3 pb-3 border-b border-purple-200 last:border-0">
+                      <div className="text-xs text-gray-600">{comment.user} - {formatDateTime(comment.timestamp)}</div>
+                      <div className="text-sm mt-1">{comment.text}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="p-6 border-t flex justify-end sticky bottom-0 bg-white">
+              <button
+                onClick={onClose}
+                className="px-6 py-2 bg-gray-200 rounded-lg hover:bg-gray-300"
+              >
+                Закрыть
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function ActionModal({ invoice, action, isOpen, onClose, onConfirm, loading }) {
+      const [rejectionReason, setRejectionReason] = useState('');
+      const [error, setError] = useState('');
+
+      if (!isOpen || !invoice) return null;
+
+      const handleConfirm = () => {
+        if (action === 'reject' && !rejectionReason.trim()) {
+          setError('Укажите причину отклонения!');
+          return;
+        }
+        onConfirm(rejectionReason);
+      };
+
+      const titles = {
+        approve: 'Согласование счета',
+        confirm: 'Подтверждение к оплате',
+        pay: 'Отметка об оплате',
+        reject: 'Отклонение счета'
+      };
+
+      const buttonLabels = {
+        approve: 'Согласовать',
+        confirm: 'Подтвердить',
+        pay: 'Отметить как оплаченный',
+        reject: 'Отклонить'
+      };
+
+      const buttonColors = {
+        approve: 'bg-green-600 hover:bg-green-700',
+        confirm: 'bg-blue-600 hover:bg-blue-700',
+        pay: 'bg-emerald-600 hover:bg-emerald-700',
+        reject: 'bg-red-600 hover:bg-red-700'
+      };
+
+      return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50" onClick={onClose}>
+          <div className="bg-white rounded-xl max-w-lg w-full" onClick={e => e.stopPropagation()}>
+            <div className="p-6 border-b flex justify-between items-center">
+              <h2 className="text-xl font-bold">{titles[action]}</h2>
+              <button onClick={onClose} className="text-gray-500 hover:text-gray-700 text-3xl leading-none">×</button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div className={`p-4 rounded-lg ${action === 'reject' ? 'bg-red-50' : 'bg-blue-50'}`}>
+                <p className="mb-4 font-semibold">
+                  {action === 'reject' 
+                    ? 'Укажите причину отклонения счета:'
+                    : `Вы действительно хотите ${action === 'approve' ? 'согласовать' : action === 'confirm' ? 'подтвердить' : 'отметить как оплаченный'} этот счет?`
+                  }
+                </p>
+              </div>
+
+              <div className="bg-gray-50 p-4 rounded-lg space-y-2">
+                <div><strong>Счет №:</strong> {invoice.number}</div>
+                <div><strong>Поставщик:</strong> {invoice.supplier}</div>
+                <div><strong>Сумма:</strong> {formatAmount(invoice.amount, invoice.currency)}</div>
+                {action === 'confirm' && invoice.confirmedBy1 && (
+                  <div className="text-green-600">✅ Уже подтвердил: {invoice.confirmedBy1}</div>
+                )}
+                {action === 'confirm' && !invoice.confirmedBy1 && (
+                  <div className="text-orange-600">Вы будете первым подтверждающим (1/2)</div>
+                )}
+              </div>
+
+              {action === 'reject' && (
+                <div>
+                  <label className="block text-sm font-semibold text-red-700 mb-2">
+                    Причина отклонения *
+                  </label>
+                  <textarea
+                    value={rejectionReason}
+                    onChange={(e) => {
+                      setRejectionReason(e.target.value);
+                      setError('');
+                    }}
+                    placeholder="Опишите причину отклонения счета..."
+                    rows="4"
+                    className="w-full px-4 py-2 border-2 border-red-300 rounded-lg focus:border-red-500 focus:outline-none"
+                  />
+                  {error && (
+                    <div className="mt-2 text-red-600 text-sm">{error}</div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="p-6 border-t flex justify-end gap-3">
+              <button
+                onClick={onClose}
+                disabled={loading}
+                className="px-6 py-2 bg-gray-200 rounded-lg hover:bg-gray-300 disabled:opacity-50"
+              >
+                Отмена
+              </button>
+              <button
+                onClick={handleConfirm}
+                disabled={loading}
+                className={`px-6 py-2 text-white rounded-lg ${buttonColors[action]} disabled:opacity-50 flex items-center gap-2`}
+              >
+                {loading && <div className="spinner w-4 h-4"></div>}
+                {buttonLabels[action]}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function App() {
+      const [currentUser, setCurrentUser] = useState(null);
+      const [invoices, setInvoices] = useState([]);
+      const [config, setConfig] = useState(null);
+      const [suppliers, setSuppliers] = useState([]);
+      const [loading, setLoading] = useState(false);
+      const [lastUpdate, setLastUpdate] = useState(null);
+      const [activeTab, setActiveTab] = useState('dashboard');
+      
+      const [viewModalOpen, setViewModalOpen] = useState(false);
+      const [viewModalInvoice, setViewModalInvoice] = useState(null);
+      const [actionModalOpen, setActionModalOpen] = useState(false);
+      const [actionModalInvoice, setActionModalInvoice] = useState(null);
+      const [actionModalType, setActionModalType] = useState(null);
+      const [createModalOpen, setCreateModalOpen] = useState(false);
+      const [commentModalOpen, setCommentModalOpen] = useState(false);
+      const [commentModalInvoice, setCommentModalInvoice] = useState(null);
+      
+      const [statusFilter, setStatusFilter] = useState('');
+      const [notification, setNotification] = useState(null);
+
+      const showNotification = (message, type = 'success') => {
+        setNotification({ message, type });
+      };
+
+      useEffect(() => {
+        if (currentUser) {
+          loadData();
+        }
+      }, [currentUser]);
+
+      const loadData = async () => {
+        setLoading(true);
+        try {
+          const [invoicesData, configData, suppliersData] = await Promise.all([
+            API.getInvoices(),
+            API.getConfig(),
+            API.getSuppliers()
+          ]);
+          
+          setInvoices(invoicesData);
+          setConfig(configData);
+          setSuppliers(suppliersData);
+          setLastUpdate(Date.now());
+        } catch (error) {
+          console.error('Error loading data:', error);
+          showNotification('Ошибка загрузки данных: ' + error.message, 'error');
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      const handleLogin = (user) => {
+        setCurrentUser(user);
+        sessionStorage.setItem('currentUser', JSON.stringify(user));
+      };
+
+      const handleLogout = () => {
+        setCurrentUser(null);
+        sessionStorage.removeItem('currentUser');
+        setInvoices([]);
+        setConfig(null);
+        setSuppliers([]);
+      };
+
+      useEffect(() => {
+        const savedUser = sessionStorage.getItem('currentUser');
+        if (savedUser) {
+          try {
+            const user = JSON.parse(savedUser);
+            setCurrentUser(user);
+          } catch (e) {
+            sessionStorage.removeItem('currentUser');
+          }
+        }
+      }, []);
+
+      const handleViewInvoice = (invoice) => {
+        setViewModalInvoice(invoice);
+        setViewModalOpen(true);
+      };
+
+      const handleAction = (invoice, action) => {
+        setActionModalInvoice(invoice);
+        setActionModalType(action);
+        setActionModalOpen(true);
+      };
+
+      const handleActionConfirm = async (rejectionReason) => {
+        if (!actionModalInvoice || !actionModalType) return;
+
+        setLoading(true);
+        try {
+          let newStatus = '';
+          
+          if (actionModalType === 'approve') {
+            newStatus = 'approved';
+          } else if (actionModalType === 'reject') {
+            newStatus = 'rejected';
+          } else if (actionModalType === 'pay') {
+            newStatus = 'paid';
+          } else if (actionModalType === 'confirm') {
+            newStatus = actionModalInvoice.confirmedBy1 ? 'confirmed' : 'partial_confirmed';
+          }
+
+          const userInfo = {
+            ...currentUser,
+            rejectionReason: rejectionReason || null
+          };
+
+          const result = await API.updateInvoiceStatus(
+            actionModalInvoice.id,
+            newStatus,
+            userInfo
+          );
+
+          if (result.success) {
+            setActionModalOpen(false);
+            setActionModalInvoice(null);
+            setActionModalType(null);
+            await loadData();
+            showNotification('Статус успешно обновлен!', 'success');
+          } else {
+            showNotification('Ошибка: ' + (result.error || 'Не удалось обновить статус'), 'error');
+          }
+        } catch (error) {
+          console.error('Error updating status:', error);
+          showNotification('Ошибка обновления статуса: ' + error.message, 'error');
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      const handleCreateInvoice = async (formData, filesData) => {
+        setLoading(true);
+        try {
+          // Сначала загружаем файлы
+          const uploadedFiles = await API.uploadFiles(filesData, formData.number);
+          
+          // Формируем данные счета
+          const invoiceData = {
+            number: formData.number,
+            date: formData.date,
+            company: formData.company,
+            supplier: formData.supplier,
+            supplierBIN: formData.supplierBIN || '',
+            amount: parseFloat(formData.amount),
+            currency: formData.currency,
+            purpose: formData.purpose,
+            dueDate: formData.dueDate,
+            priority: formData.priority,
+            notes: formData.notes || '',
+            files: uploadedFiles.map(f => f.url).join('\n'),
+            createdBy: currentUser.name
+          };
+
+          // Сохраняем счет
+          const result = await API.saveInvoice(invoiceData);
+
+          if (result.success) {
+            setCreateModalOpen(false);
+            await loadData();
+            showNotification('Счет успешно создан!', 'success');
+          } else {
+            throw new Error(result.error || 'Ошибка создания счета');
+          }
+        } catch (error) {
+          console.error('Error creating invoice:', error);
+          showNotification('Ошибка: ' + error.message, 'error');
+          throw error;
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      const handlePrint = async (invoice) => {
+        try {
+          const result = await API.markPrinted(invoice.id, currentUser);
+          if (result.success) {
+            await loadData();
+            showNotification('Счет отмечен как распечатанный', 'success');
+          }
+        } catch (error) {
+          console.error('Error marking printed:', error);
+        }
+      };
+
+      const handleAddComment = (invoice) => {
+        setCommentModalInvoice(invoice);
+        setCommentModalOpen(true);
+      };
+
+      const handleCommentSubmit = async (commentText) => {
+        if (!commentModalInvoice) return;
+
+        setLoading(true);
+        try {
+          const result = await API.addComment(commentModalInvoice.id, currentUser, commentText);
+          
+          if (result.success) {
+            setCommentModalOpen(false);
+            setCommentModalInvoice(null);
+            await loadData();
+            showNotification('Комментарий добавлен!', 'success');
+          } else {
+            showNotification('Ошибка добавления комментария', 'error');
+          }
+        } catch (error) {
+          console.error('Error adding comment:', error);
+          showNotification('Ошибка: ' + error.message, 'error');
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      const handleFilterByStatus = (status) => {
+        setStatusFilter(status);
+        setActiveTab('invoices');
+      };
+
+      if (!currentUser) {
+        return <AuthScreen onLogin={handleLogin} />;
+      }
+
+      return (
+        <div className="min-h-screen bg-gray-50">
+          <Header
+            user={currentUser}
+            onLogout={handleLogout}
+            onRefresh={loadData}
+            lastUpdate={lastUpdate}
+            loading={loading}
+          />
+
+          <Tabs activeTab={activeTab} onChange={setActiveTab} />
+
+          {loading && invoices.length === 0 ? (
+            <div className="flex items-center justify-center py-20">
+              <div className="text-center">
+                <div className="spinner mx-auto mb-4"></div>
+                <div className="text-gray-600">Загрузка данных...</div>
+              </div>
+            </div>
+          ) : (
+            <>
+              {activeTab === 'dashboard' && (
+                <Dashboard 
+                  invoices={invoices}
+                  user={currentUser}
+                  onFilterByStatus={handleFilterByStatus}
+                />
+              )}
+
+              {activeTab === 'invoices' && (
+                <InvoicesView
+                  invoices={invoices}
+                  user={currentUser}
+                  onView={handleViewInvoice}
+                  onAction={handleAction}
+                  onCreateNew={() => setCreateModalOpen(true)}
+                  onPrint={handlePrint}
+                  onAddComment={handleAddComment}
+                  initialStatusFilter={statusFilter}
+                />
+              )}
+            </>
+          )}
+
+          {notification && (
+            <Notification
+              message={notification.message}
+              type={notification.type}
+              onClose={() => setNotification(null)}
+            />
+          )}
+
+          <ViewInvoiceModal
+            invoice={viewModalInvoice}
+            isOpen={viewModalOpen}
+            onClose={() => setViewModalOpen(false)}
+          />
+
+          <ActionModal
+            invoice={actionModalInvoice}
+            action={actionModalType}
+            isOpen={actionModalOpen}
+            onClose={() => setActionModalOpen(false)}
+            onConfirm={handleActionConfirm}
+            loading={loading}
+          />
+
+          <CreateInvoiceModal
+            isOpen={createModalOpen}
+            onClose={() => setCreateModalOpen(false)}
+            onCreate={handleCreateInvoice}
+            config={config}
+            suppliers={suppliers}
+          />
+
+          <CommentModal
+            invoice={commentModalInvoice}
+            isOpen={commentModalOpen}
+            onClose={() => setCommentModalOpen(false)}
+            onAdd={handleCommentSubmit}
+            loading={loading}
+          />
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
